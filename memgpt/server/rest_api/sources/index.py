@@ -8,6 +8,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Body, Depends, Query, HTTPException, status, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.responses import StreamingResponse
 
 from memgpt.models.pydantic_models import SourceModel, PassageModel, DocumentModel
 from memgpt.server.rest_api.auth_token import get_current_user
@@ -144,7 +145,7 @@ def setup_sources_index_router(server: SyncServer, interface: QueuingInterface, 
         """Detach a data source from an existing agent."""
         server.detach_source_from_agent(source_id=source_id, agent_id=agent_id, user_id=user_id)
 
-    @router.post("/sources/{source_id}/upload", tags=["sources"], response_model=UploadFileToSourceResponse)
+    @router.post("/sources/{source_id}/upload", tags=["sources"])
     async def upload_file_to_source(
         # file: UploadFile = UploadFile(..., description="The file to upload."),
         file: UploadFile,
@@ -165,10 +166,15 @@ def setup_sources_index_router(server: SyncServer, interface: QueuingInterface, 
             connector = DirectoryConnector(input_files=[file_path])
 
             # load the data into the source via the connector
-            passage_count, document_count = server.load_data(user_id=user_id, source_name=source.name, connector=connector)
+            async def load_passages(user_id, source_name, connector):
+                # yields passage ids
+                yield server.load_data(user_id=user_id, source_name=source_name, connector=connector)
+
+            # stream responses
+            return StreamingResponse(load_passages(user_id, source.name, connector), media_type="application/json")
 
         # TODO: actually return added passages/documents
-        return UploadFileToSourceResponse(source=source, added_passages=passage_count, added_documents=document_count)
+        # return UploadFileToSourceResponse(source=source, added_passages=passage_count, added_documents=document_count)
 
     @router.get("/sources/{source_id}/passages ", tags=["sources"], response_model=GetSourcePassagesResponse)
     async def list_passages(

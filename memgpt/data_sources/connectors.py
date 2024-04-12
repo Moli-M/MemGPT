@@ -4,6 +4,7 @@ from memgpt.agent_store.storage import StorageConnector, TableType
 from memgpt.embeddings import embedding_model
 from memgpt.data_types import Document, Passage
 
+import uuid
 from typing import List, Iterator, Dict, Tuple, Optional
 import typer
 from llama_index.core import Document as LlamaIndexDocument
@@ -23,8 +24,17 @@ def load_data(
     embedding_config: EmbeddingConfig,
     passage_store: StorageConnector,
     document_store: Optional[StorageConnector] = None,
-):
-    """Load data from a connector (generates documents and passages) into a specified source_id, associatedw with a user_id."""
+) -> Iterator[uuid.UUID]:
+    """
+    Load data from a connector (generates documents and passages) into a specified source_id, associatedw with a user_id.
+
+    :param connector: DataConnector object that generates documents and passages.
+    :param source: Source object that contains metadata about the source.
+    :param embedding_config: EmbeddingConfig object that contains metadata about the embedding model.
+    :param passage_store: StorageConnector object that stores the passages.
+    :param document_store: Optional StorageConnector object that stores the documents.
+    :return: Iterator of UUIDs of the inserted passages.
+    """
     assert (
         source.embedding_model == embedding_config.embedding_model
     ), f"Source and embedding config models must match, got: {source.embedding_model} and {embedding_config.embedding_model}"
@@ -104,12 +114,14 @@ def load_data(
                 passage_count += len(passages)
                 passages = []
 
+            yield passage.id
+
     if len(passages) > 0:
         # insert passages into passage store
         passage_store.insert_many(passages)
         passage_count += len(passages)
 
-    return passage_count, document_count
+    # return passage_count, document_count
 
 
 class DirectoryConnector(DataConnector):
