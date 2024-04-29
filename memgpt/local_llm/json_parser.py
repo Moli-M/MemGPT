@@ -10,6 +10,7 @@ def clean_json_string_extra_backslash(s):
 
     NOTE: Google AI Gemini API likes to include these
     """
+
     # Strip slashes that are used to escape single quotes and other backslashes
     # Use json.loads to parse it correctly
     while "\\\\" in s:
@@ -18,6 +19,7 @@ def clean_json_string_extra_backslash(s):
 
 
 def replace_escaped_underscores(string: str):
+
     """Handles the case of escaped underscores, e.g.:
 
     {
@@ -29,8 +31,9 @@ def replace_escaped_underscores(string: str):
     return string.replace("\_", "_")
 
 
-def extract_first_json(string: str):
+def extract_first_json(string: str): 
     """Handles the case of two JSON objects back-to-back"""
+
     from memgpt.utils import printd
 
     depth = 0
@@ -73,10 +76,12 @@ def add_missing_heartbeat(llm_json):
             }
         }
     """
+
     raise NotImplementedError
 
 
 def clean_and_interpret_send_message_json(json_string):
+
     # If normal parsing fails, attempt to clean and extract manually
     cleaned_json_string = re.sub(r"[^\x00-\x7F]+", "", json_string)  # Remove non-ASCII characters
     function_match = re.search(r'"function":\s*"send_message"', cleaned_json_string)
@@ -125,7 +130,7 @@ def repair_even_worse_json(json_string):
     This function repairs a malformed JSON string where string literals are broken up and
     not properly enclosed in quotes. It aims to consolidate everything between 'message': and
     the two ending curly braces into one string for the 'message' field.
-    """
+    """    
     # State flags
     in_message = False
     in_string = False
@@ -169,8 +174,53 @@ def repair_even_worse_json(json_string):
     repaired_json = "".join(new_json_parts)
     return repaired_json
 
+def fix_json(json_string):
+    json_string = json.dumps(json_string, indent=2)
+
+    json_string = json_string.replace("\\n", "").replace("\\", "")
+
+    json_split = json_string.split(",", 1)
+
+    function = json_split[0]
+    params = json_split[1]
+
+    func_name = "send_message"
+
+    if "message" in function:
+        func_name = "send_message"
+    
+    if "core" in function:
+        func_name = "append_core_memory"
+
+    if "response" in function:
+        func_name = "response"
+
+    parameters = params.split("{")[1].split("\",")
+    keys = []
+    values = []
+    for par in parameters:
+        key = par.split(":",1)[0].replace(",", "").replace(" ", "").replace('"', "")
+        value = par.split(":",1)[1].replace("}", "").replace('"', "")
+        keys.append(key)
+        values.append(value)
+
+    datos = dict(zip(keys, values))
+
+    j = {
+        "function": func_name,
+        "params": datos
+    }
+
+    print("\n\n\n2:")
+    print(json.dumps(j, indent=2))
+    print("\n\n\n")
+
+    return json.dumps(j, indent=2)
 
 def clean_json(raw_llm_output, messages=None, functions=None):
+    print("\n\n\n:")
+    print(raw_llm_output)
+    print("\n\n\n")
     from memgpt.utils import printd
 
     strategies = [
@@ -187,9 +237,11 @@ def clean_json(raw_llm_output, messages=None, functions=None):
         lambda output: json.loads(repair_even_worse_json(output), strict=JSON_LOADS_STRICT),
         lambda output: extract_first_json(output + "}}"),
         lambda output: clean_and_interpret_send_message_json(output),
+        lambda output: fix_json(output),
         # replace underscores
         lambda output: json.loads(replace_escaped_underscores(output), strict=JSON_LOADS_STRICT),
         lambda output: extract_first_json(replace_escaped_underscores(output) + "}}"),
+        
     ]
 
     for strategy in strategies:
