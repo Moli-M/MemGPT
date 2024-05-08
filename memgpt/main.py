@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import traceback
+import PyPDF2
 
 import questionary
 import requests
@@ -109,6 +110,23 @@ def run_agent_loop(
             clear_line(console, strip_ui=strip_ui)
             if not stream:
                 print()
+            print("\n\n\nUSERINPUT: ", user_input)
+            print(counter)
+            if(counter == 1):
+                pdf_path = 'C:\\Users\\diego\\Desktop\\LLM\\info.pdf'
+                with open(pdf_path, 'rb') as pdf_file:
+                    pdf_reader = PyPDF2.PdfReader(pdf_file)
+
+                    for page_num in range(len(pdf_reader.pages)):
+                        page = pdf_reader.pages[page_num]
+                        page_text = page.extract_text()
+                        
+                        lines = page_text.split('\n')
+
+                        lines.append("Esto es informacion mia, aprendetela\n")
+                        user_input = ",".join(lines)
+
+                print(user_input)
 
             # Gracefully exit on Ctrl-C/D
             if user_input is None:

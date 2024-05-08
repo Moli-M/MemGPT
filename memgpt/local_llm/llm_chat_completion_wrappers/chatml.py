@@ -300,13 +300,17 @@ class ChatMLInnerMonologueWrapper(LLMChatCompletionWrapper):
             # print(f"adding prefix back to llm, raw_llm_output=\n{raw_llm_output}")
             raw_llm_output = assistant_prefix + raw_llm_output
             # print(f"->\n{raw_llm_output}")
-
+        
         try:
             function_json_output = clean_json(raw_llm_output)
         except Exception as e:
             raise Exception(f"Failed to decode JSON from LLM output:\n{raw_llm_output} - error\n{str(e)}")
         try:
             # NOTE: weird bug can happen where 'function' gets nested if the prefix in the prompt isn't abided by
+            print("\n\n\n4")
+            print(function_json_output)
+            print("\n\n\n")
+            #function_json_output = json.loads(function_json_output)
             if isinstance(function_json_output["function"], dict):
                 function_json_output = function_json_output["function"]
             # regular unpacking
