@@ -10,6 +10,9 @@ test_agent_name = f"test_client_{str(uuid.uuid4())}"
 client = None
 agent_obj = None
 
+# TODO: these tests should include looping through LLM providers, since behavior may vary across providers
+# TODO: these tests should add function calls into the summarized message sequence:W
+
 
 def create_test_agent():
     """Create a test agent that we can call functions on"""
@@ -44,25 +47,25 @@ def test_summarize():
     response = client.user_message(
         agent_id=agent_obj.agent_state.id,
         message="Hey, how's it going? What do you think about this whole shindig",
-    )
+    ).messages
     assert response is not None and len(response) > 0
     print(f"test_summarize: response={response}")
 
     response = client.user_message(
         agent_id=agent_obj.agent_state.id,
         message="Any thoughts on the meaning of life?",
-    )
+    ).messages
     assert response is not None and len(response) > 0
     print(f"test_summarize: response={response}")
 
-    response = client.user_message(agent_id=agent_obj.agent_state.id, message="Does the number 42 ring a bell?")
+    response = client.user_message(agent_id=agent_obj.agent_state.id, message="Does the number 42 ring a bell?").messages
     assert response is not None and len(response) > 0
     print(f"test_summarize: response={response}")
 
     response = client.user_message(
         agent_id=agent_obj.agent_state.id,
         message="Would you be surprised to learn that you're actually conversing with an AI right now?",
-    )
+    ).messages
     assert response is not None and len(response) > 0
     print(f"test_summarize: response={response}")
 

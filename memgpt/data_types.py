@@ -11,11 +11,14 @@ from pydantic import BaseModel, Field
 from memgpt.constants import (
     DEFAULT_HUMAN,
     DEFAULT_PERSONA,
+    DEFAULT_PRESET,
+    JSON_ENSURE_ASCII,
     LLM_MAX_TOKENS,
     MAX_EMBEDDING_DIM,
     TOOL_CALL_ID_MAX_LEN,
 )
 from memgpt.local_llm.constants import INNER_THOUGHTS_KWARG
+from memgpt.prompts import gpt_system
 from memgpt.utils import (
     create_uuid_from_string,
     get_human_text,
@@ -78,10 +81,10 @@ class Message(Record):
 
     def __init__(
         self,
-        user_id: uuid.UUID,
-        agent_id: uuid.UUID,
         role: str,
         text: str,
+        user_id: Optional[uuid.UUID] = None,
+        agent_id: Optional[uuid.UUID] = None,
         model: Optional[str] = None,  # model used to make function call
         name: Optional[str] = None,  # optional participant name
         created_at: Optional[datetime] = None,
@@ -124,6 +127,8 @@ class Message(Record):
         # if role == "assistant", this MAY be specified
         # if role != "assistant", this must be null
         assert tool_calls is None or isinstance(tool_calls, list)
+        if tool_calls is not None:
+            assert all([isinstance(tc, ToolCall) for tc in tool_calls]), f"Tool calls must be of type ToolCall, got {tool_calls}"
         self.tool_calls = tool_calls
 
         # if role == "tool", then this must be specified
@@ -243,6 +248,11 @@ class Message(Record):
                 tool_calls=tool_calls,
                 tool_call_id=openai_message_dict["tool_call_id"] if "tool_call_id" in openai_message_dict else None,
             )
+
+    def to_openai_dict_search_results(self, max_tool_id_length=TOOL_CALL_ID_MAX_LEN) -> dict:
+        result_json = self.to_openai_dict()
+        search_result_json = {"timestamp": self.created_at, "message": {"content": result_json["content"], "role": result_json["role"]}}
+        return search_result_json
 
     def to_openai_dict(self, max_tool_id_length=TOOL_CALL_ID_MAX_LEN) -> dict:
         """Go from Message class to ChatCompletion message object"""
@@ -544,7 +554,7 @@ class Message(Record):
                 cohere_message = []
                 for tc in self.tool_calls:
                     # TODO better way to pack?
-                    function_call_text = json.dumps(tc.to_dict())
+                    function_call_text = json.dumps(tc.to_dict(), ensure_ascii=JSON_ENSURE_ASCII)
                     cohere_message.append(
                         {
                             "role": function_call_role,
@@ -743,24 +753,24 @@ class User:
 
 
 class AgentState:
+
     def __init__(
         self,
         name: str,
         user_id: uuid.UUID,
-        persona: str,  # the filename where the persona was originally sourced from
-        human: str,  # the filename where the human was originally sourced from
+        # tools
+        tools: List[str],  # list of tools by name
+        # system prompt
+        system: str,
+        # config
         llm_config: LLMConfig,
         embedding_config: EmbeddingConfig,
-        preset: str,
         # (in-context) state contains:
-        # persona: str  # the current persona text
-        # human: str  # the current human text
-        # system: str,  # system prompt (not required if initializing with a preset)
-        # functions: dict,  # schema definitions ONLY (function code linked at runtime)
-        # messages: List[dict],  # in-context messages
         id: Optional[uuid.UUID] = None,
         state: Optional[dict] = None,
         created_at: Optional[datetime] = None,
+        # messages (TODO: implement this)
+        _metadata: Optional[dict] = None,
     ):
         if id is None:
             self.id = uuid.uuid4()
@@ -772,12 +782,10 @@ class AgentState:
         # TODO(swooders) we need to handle the case where name is None here
         # in AgentConfig we autogenerate a name, not sure what the correct thing w/ DBs is, what about NounAdjective combos? Like giphy does? BoredGiraffe etc
         self.name = name
+        assert self.name, f"AgentState name must be a non-empty string"
         self.user_id = user_id
-        self.preset = preset
         # The INITIAL values of the persona and human
         # The values inside self.state['persona'], self.state['human'] are the CURRENT values
-        self.persona = persona
-        self.human = human
 
         self.llm_config = llm_config
         self.embedding_config = embedding_config
@@ -786,6 +794,16 @@ class AgentState:
 
         # state
         self.state = {} if not state else state
+
+        # tools
+        self.tools = tools
+
+        # system
+        self.system = system
+        assert self.system is not None, f"Must provide system prompt, cannot be None"
+
+        # metadata
+        self._metadata = _metadata
 
 
 class Source:
@@ -838,12 +856,16 @@ class Token:
 
 
 class Preset(BaseModel):
+    # TODO: remove Preset
     name: str = Field(..., description="The name of the preset.")
     id: uuid.UUID = Field(default_factory=uuid.uuid4, description="The unique identifier of the preset.")
     user_id: Optional[uuid.UUID] = Field(None, description="The unique identifier of the user who created the preset.")
     description: Optional[str] = Field(None, description="The description of the preset.")
     created_at: datetime = Field(default_factory=get_utc_time, description="The unix timestamp of when the preset was created.")
-    system: str = Field(..., description="The system prompt of the preset.")
+    system: str = Field(
+        gpt_system.get_system_text(DEFAULT_PRESET), description="The system prompt of the preset."
+    )  # default system prompt is same as default preset name
+    # system_name: Optional[str] = Field(None, description="The name of the system prompt of the preset.")
     persona: str = Field(default=get_persona_text(DEFAULT_PERSONA), description="The persona of the preset.")
     persona_name: Optional[str] = Field(None, description="The name of the persona of the preset.")
     human: str = Field(default=get_human_text(DEFAULT_HUMAN), description="The human of the preset.")

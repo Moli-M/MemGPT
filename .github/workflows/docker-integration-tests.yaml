@@ -1,3 +1,5 @@
+name: Run Docker integration tests
+
 on:
   push:
     branches: [ main ]
@@ -54,8 +56,9 @@ jobs:
         PYTHONPATH: ${{ github.workspace }}:${{ env.PYTHONPATH }}
       run: |
         pipx install poetry==1.8.2
-        poetry install -E dev
+        poetry install -E dev -E postgres
         poetry run pytest -s tests/test_client.py
+        poetry run pytest -s tests/test_concurrent_connections.py
 
     - name: Print docker logs if tests fail
       if: failure()

@@ -38,8 +38,7 @@ from memgpt.local_llm.constants import (
 )
 from memgpt.local_llm.utils import get_available_wrappers
 from memgpt.metadata import MetadataStore
-from memgpt.models.pydantic_models import HumanModel, PersonaModel
-from memgpt.presets.presets import create_preset_from_file
+from memgpt.models.pydantic_models import PersonaModel
 from memgpt.server.utils import shorten_key_middle
 
 app = typer.Typer()
@@ -866,6 +865,42 @@ def configure_embedding_endpoint(config: MemGPTConfig, credentials: MemGPTCreden
             embedding_dim = int(embedding_dim)
         except Exception:
             raise ValueError(f"Failed to cast {embedding_dim} to integer.")
+    elif embedding_provider == "ollama":
+        # configure ollama embedding endpoint
+        embedding_endpoint_type = "ollama"
+        embedding_endpoint = "http://localhost:11434/api/embeddings"
+        # Source: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings:~:text=http%3A//localhost%3A11434/api/embeddings
+
+        # get endpoint (is this necessary?)
+        embedding_endpoint = questionary.text("Enter Ollama API endpoint:").ask()
+        if embedding_endpoint is None:
+            raise KeyboardInterrupt
+        while not utils.is_valid_url(embedding_endpoint):
+            typer.secho(f"Endpoint must be a valid address", fg=typer.colors.YELLOW)
+            embedding_endpoint = questionary.text("Enter Ollama API endpoint:").ask()
+            if embedding_endpoint is None:
+                raise KeyboardInterrupt
+
+        # get model type
+        default_embedding_model = (
+            config.default_embedding_config.embedding_model if config.default_embedding_config else "mxbai-embed-large"
+        )
+        embedding_model = questionary.text(
+            "Enter Ollama model tag (e.g. mxbai-embed-large):",
+            default=default_embedding_model,
+        ).ask()
+        if embedding_model is None:
+            raise KeyboardInterrupt
+
+        # get model dimensions
+        default_embedding_dim = config.default_embedding_config.embedding_dim if config.default_embedding_config else "512"
+        embedding_dim = questionary.text("Enter embedding model dimensions (e.g. 512):", default=str(default_embedding_dim)).ask()
+        if embedding_dim is None:
+            raise KeyboardInterrupt
+        try:
+            embedding_dim = int(embedding_dim)
+        except Exception:
+            raise ValueError(f"Failed to cast {embedding_dim} to integer.")
     else:  # local models
         embedding_endpoint_type = "local"
         embedding_endpoint = None
@@ -877,7 +912,7 @@ def configure_embedding_endpoint(config: MemGPTConfig, credentials: MemGPTCreden
 
 def configure_archival_storage(config: MemGPTConfig, credentials: MemGPTCredentials):
     # Configure archival storage backend
-    archival_storage_options = ["postgres", "chroma"]
+    archival_storage_options = ["postgres", "chroma", "milvus", "qdrant"]
     archival_storage_type = questionary.select(
         "Select storage backend for archival data:", archival_storage_options, default=config.archival_storage_type
     ).ask()
@@ -914,6 +949,26 @@ def configure_archival_storage(config: MemGPTConfig, credentials: MemGPTCredenti
         if chroma_type == "persistent":
             archival_storage_path = os.path.join(MEMGPT_DIR, "chroma")
 
+    if archival_storage_type == "qdrant":
+        qdrant_type = questionary.select("Select Qdrant backend:", ["local", "server"], default="local").ask()
+        if qdrant_type is None:
+            raise KeyboardInterrupt
+        if qdrant_type == "server":
+            archival_storage_uri = questionary.text(
+                "Enter the Qdrant instance URI (Default: localhost:6333):", default="localhost:6333"
+            ).ask()
+            if archival_storage_uri is None:
+                raise KeyboardInterrupt
+        if qdrant_type == "local":
+            archival_storage_path = os.path.join(MEMGPT_DIR, "qdrant")
+
+    if archival_storage_type == "milvus":
+        default_milvus_uri = archival_storage_path = os.path.join(MEMGPT_DIR, "milvus.db")
+        archival_storage_uri = questionary.text(
+            f"Enter the Milvus connection URI (Default: {default_milvus_uri}):", default=default_milvus_uri
+        ).ask()
+        if archival_storage_uri is None:
+            raise KeyboardInterrupt
     return archival_storage_type, archival_storage_uri, archival_storage_path
 
     # TODO: allow configuring embedding model
@@ -1029,25 +1084,22 @@ def configure():
     else:
         ms.create_user(user)
 
-    # create preset records in metadata store
-    from memgpt.presets.presets import add_default_presets
-
-    add_default_presets(user_id, ms)
-
 
 class ListChoice(str, Enum):
     agents = "agents"
     humans = "humans"
     personas = "personas"
     sources = "sources"
-    presets = "presets"
 
 
 @app.command()
 def list(arg: Annotated[ListChoice, typer.Argument]):
+    from memgpt.client.client import create_client
+
     config = MemGPTConfig.load()
     ms = MetadataStore(config)
     user_id = uuid.UUID(config.anon_clientid)
+    client = create_client(base_url=os.getenv("MEMGPT_BASE_URL"), token=os.getenv("MEMGPT_SERVER_PASS"))
     table = ColorTable(theme=Themes.OCEAN)
     if arg == ListChoice.agents:
         """List all agents"""
@@ -1074,7 +1126,7 @@ def list(arg: Annotated[ListChoice, typer.Argument]):
     elif arg == ListChoice.humans:
         """List all humans"""
         table.field_names = ["Name", "Text"]
-        for human in ms.list_humans(user_id=user_id):
+        for human in client.list_humans():
             table.add_row([human.name, human.text.replace("\n", "")[:100]])
         print(table)
     elif arg == ListChoice.personas:
@@ -1111,21 +1163,6 @@ def list(arg: Annotated[ListChoice, typer.Argument]):
             )
 
         print(table)
-    elif arg == ListChoice.presets:
-        """List all available presets"""
-        table.field_names = ["Name", "Description", "Sources", "Functions"]
-        for preset in ms.list_presets(user_id=user_id):
-            sources = ms.get_preset_sources(preset_id=preset.id)
-            table.add_row(
-                [
-                    preset.name,
-                    preset.description,
-                    ",".join([source.name for source in sources]),
-                    # json.dumps(preset.functions_schema, indent=4)
-                    ",\n".join([f["name"] for f in preset.functions_schema]),
-                ]
-            )
-        print(table)
     else:
         raise ValueError(f"Unknown argument {arg}")
 
@@ -1138,15 +1175,18 @@ def add(
     filename: Annotated[Optional[str], typer.Option("-f", help="Specify filename")] = None,
 ):
     """Add a person/human"""
+    from memgpt.client.client import create_client
+
     config = MemGPTConfig.load()
     user_id = uuid.UUID(config.anon_clientid)
     ms = MetadataStore(config)
+    client = create_client(base_url=os.getenv("MEMGPT_BASE_URL"), token=os.getenv("MEMGPT_SERVER_PASS"))
     if filename:  # read from file
         assert text is None, "Cannot specify both text and filename"
-        with open(filename, "r") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             text = f.read()
     if option == "persona":
-        persona = ms.get_persona(name=name, user_id=user_id)
+        persona = ms.get_persona(name=name)
         if persona:
             # config if user wants to overwrite
             if not questionary.confirm(f"Persona {name} already exists. Overwrite?").ask():
@@ -1158,19 +1198,15 @@ def add(
             ms.add_persona(persona)
 
     elif option == "human":
-        human = ms.get_human(name=name, user_id=user_id)
+        human = client.get_human(name=name)
         if human:
             # config if user wants to overwrite
             if not questionary.confirm(f"Human {name} already exists. Overwrite?").ask():
                 return
             human.text = text
-            ms.update_human(human)
+            client.update_human(human)
         else:
-            human = HumanModel(name=name, text=text, user_id=user_id)
-            ms.add_human(HumanModel(name=name, text=text, user_id=user_id))
-    elif option == "preset":
-        assert filename, "Must specify filename for preset"
-        create_preset_from_file(filename, name, user_id, ms)
+            human = client.create_human(name=name, human=text)
     else:
         raise ValueError(f"Unknown kind {option}")
 
@@ -1178,9 +1214,11 @@ def add(
 @app.command()
 def delete(option: str, name: str):
     """Delete a source from the archival memory."""
+    from memgpt.client.client import create_client
 
     config = MemGPTConfig.load()
     user_id = uuid.UUID(config.anon_clientid)
+    client = create_client(base_url=os.getenv("MEMGPT_BASE_URL"), token=os.getenv("MEMGPT_API_KEY"))
     ms = MetadataStore(config)
     assert ms.get_user(user_id=user_id), f"User {user_id} does not exist"
 
@@ -1217,18 +1255,14 @@ def delete(option: str, name: str):
             ms.delete_agent(agent_id=agent.id)
 
         elif option == "human":
-            human = ms.get_human(name=name, user_id=user_id)
+            human = client.get_human(name=name)
             assert human is not None, f"Human {name} does not exist"
-            ms.delete_human(name=name, user_id=user_id)
+            client.delete_human(name=name)
         elif option == "persona":
-            persona = ms.get_persona(name=name, user_id=user_id)
+            persona = ms.get_persona(name=name)
             assert persona is not None, f"Persona {name} does not exist"
-            ms.delete_persona(name=name, user_id=user_id)
-            assert ms.get_persona(name=name, user_id=user_id) is None, f"Persona {name} still exists"
-        elif option == "preset":
-            preset = ms.get_preset(name=name, user_id=user_id)
-            assert preset is not None, f"Preset {name} does not exist"
-            ms.delete_preset(name=name, user_id=user_id)
+            ms.delete_persona(name=name)
+            assert ms.get_persona(name=name) is None, f"Persona {name} still exists"
         else:
             raise ValueError(f"Option {option} not implemented")
 

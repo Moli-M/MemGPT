@@ -5,15 +5,16 @@ import pytest
 from dotenv import load_dotenv
 
 import memgpt.utils as utils
-from tests.config import TestMGPTConfig
+from memgpt.constants import BASE_TOOLS
 
 utils.DEBUG = True
+from memgpt.config import MemGPTConfig
 from memgpt.credentials import MemGPTCredentials
-from memgpt.data_types import EmbeddingConfig, LLMConfig
+from memgpt.memory import ChatMemory
 from memgpt.server.server import SyncServer
 from memgpt.settings import settings
 
-from .utils import DummyDataConnector, wipe_config, wipe_memgpt_home
+from .utils import DummyDataConnector, create_config, wipe_config, wipe_memgpt_home
 
 
 @pytest.fixture(scope="module")
@@ -22,56 +23,29 @@ def server():
     wipe_config()
     wipe_memgpt_home()
 
-    db_url = settings.pg_db
+    db_url = settings.memgpt_pg_uri
+
+    # Use os.getenv with a fallback to os.environ.get
+    db_url = settings.memgpt_pg_uri
 
     if os.getenv("OPENAI_API_KEY"):
-        config = TestMGPTConfig(
-            archival_storage_uri=db_url,
-            recall_storage_uri=db_url,
-            metadata_storage_uri=db_url,
-            archival_storage_type="postgres",
-            recall_storage_type="postgres",
-            metadata_storage_type="postgres",
-            # embeddings
-            default_embedding_config=EmbeddingConfig(
-                embedding_endpoint_type="openai",
-                embedding_endpoint="https://api.openai.com/v1",
-                embedding_model="text-embedding-ada-002",
-                embedding_dim=1536,
-            ),
-            # llms
-            default_llm_config=LLMConfig(
-                model_endpoint_type="openai",
-                model_endpoint="https://api.openai.com/v1",
-                model="gpt-4",
-            ),
-        )
+        create_config("openai")
         credentials = MemGPTCredentials(
             openai_key=os.getenv("OPENAI_API_KEY"),
         )
     else:  # hosted
-        config = TestMGPTConfig(
-            archival_storage_uri=db_url,
-            recall_storage_uri=db_url,
-            metadata_storage_uri=db_url,
-            archival_storage_type="postgres",
-            recall_storage_type="postgres",
-            metadata_storage_type="postgres",
-            # embeddings
-            default_embedding_config=EmbeddingConfig(
-                embedding_endpoint_type="hugging-face",
-                embedding_endpoint="https://embeddings.memgpt.ai",
-                embedding_model="BAAI/bge-large-en-v1.5",
-                embedding_dim=1024,
-            ),
-            # llms
-            default_llm_config=LLMConfig(
-                model_endpoint_type="vllm",
-                model_endpoint="https://api.memgpt.ai",
-                model="ehartford/dolphin-2.5-mixtral-8x7b",
-            ),
-        )
+        create_config("memgpt_hosted")
         credentials = MemGPTCredentials()
+
+    config = MemGPTConfig.load()
+
+    # set to use postgres
+    config.archival_storage_uri = db_url
+    config.recall_storage_uri = db_url
+    config.metadata_storage_uri = db_url
+    config.archival_storage_type = "postgres"
+    config.recall_storage_type = "postgres"
+    config.metadata_storage_type = "postgres"
 
     config.save()
     credentials.save()
@@ -86,8 +60,6 @@ def user_id(server):
     user = server.create_user()
     print(f"Created user\n{user.id}")
 
-    # initialize with default presets
-    server.initialize_default_presets(user.id)
     yield user.id
 
     # cleanup
@@ -98,9 +70,7 @@ def user_id(server):
 def agent_id(server, user_id):
     # create agent
     agent_state = server.create_agent(
-        user_id=user_id,
-        name="test_agent",
-        preset="memgpt_chat",
+        user_id=user_id, name="test_agent", tools=BASE_TOOLS, memory=ChatMemory(human="I am Chad", persona="I love testing")
     )
     print(f"Created agent\n{agent_state}")
     yield agent_state.id
@@ -196,8 +166,21 @@ def test_get_recall_memory(server, user_id, agent_id):
     cursor4, messages_4 = server.get_agent_recall_cursor(user_id=user_id, agent_id=agent_id, reverse=True, before=cursor1)
     assert len(messages_4) == 1
 
+    print("MESSAGES")
+    for m in messages_3:
+        print(m["id"], m["role"])
+        if m["role"] == "assistant":
+            print(m["text"])
+        print("------------")
+
     # test in-context message ids
+    all_messages = server.get_agent_messages(user_id=user_id, agent_id=agent_id, start=0, count=1000)
+    print("num messages", len(all_messages))
     in_context_ids = server.get_in_context_message_ids(user_id=user_id, agent_id=agent_id)
+    print(in_context_ids)
+    for m in messages_3:
+        if str(m["id"]) not in [str(i) for i in in_context_ids]:
+            print("missing", m["id"], m["role"])
     assert len(in_context_ids) == len(messages_3)
     assert isinstance(in_context_ids[0], uuid.UUID)
     message_ids = [m["id"] for m in messages_3]
